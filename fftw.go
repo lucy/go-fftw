@@ -5,6 +5,7 @@ package fftw
 import "C"
 
 import (
+	"fmt"
 	"reflect"
 	"runtime"
 	"unsafe"
@@ -40,10 +41,27 @@ var Estimate Flag = C.FFTW_ESTIMATE
 var Measure Flag = C.FFTW_MEASURE
 
 func Alloc1d(n int) []complex128 {
-	buffer := (unsafe.Pointer)(C.fftw_malloc((C.size_t)(16 * n)))
+	// Try to allocate memory.
+	buffer, err := C.fftw_malloc(C.size_t(16 * n))
+	if err != nil {
+		// If malloc failed, invoke garbage collector and try again.
+		runtime.GC()
+		buffer, err = C.fftw_malloc(C.size_t(16 * n))
+		if err != nil {
+			// If it still failed, then panic.
+			panic(fmt.Sprint("Could not fftw_malloc for ", n, " elements: ", err))
+		}
+	}
+	// Create a slice header for the memory.
 	var slice []complex128
 	header := (*reflect.SliceHeader)(unsafe.Pointer(&slice))
-	*header = reflect.SliceHeader{uintptr(buffer), n, n}
+	header.Data = uintptr(buffer)
+	header.Len = n
+	header.Cap = n
+	// In the spirit of Go, initialize all memory to zero.
+	for i := 0; i < n; i++ {
+		slice[i] = 0
+	}
 	return slice
 }
 
@@ -69,27 +87,59 @@ func Alloc3d(n0, n1, n2 int) [][][]complex128 {
 	return r
 }
 
+func Free1d(x []complex128) {
+	C.fftw_free(unsafe.Pointer(&x[0]))
+}
+
+func Free2d(x [][]complex128) {
+	C.fftw_free(unsafe.Pointer(&x[0][0]))
+}
+
+func Free3d(x [][][]complex128) {
+	C.fftw_free(unsafe.Pointer(&x[0][0][0]))
+}
+
+func Dft1d(in, out []complex128, dir Direction, flag Flag) {
+	p := PlanDft1d(in, out, dir, flag)
+	p.Execute()
+}
+
+func Dft2d(in, out [][]complex128, dir Direction, flag Flag) {
+	p := PlanDft2d(in, out, dir, flag)
+	p.Execute()
+}
+
+func Dft3d(in, out [][][]complex128, dir Direction, flag Flag) {
+	p := PlanDft3d(in, out, dir, flag)
+	p.Execute()
+}
+
 func PlanDft1d(in, out []complex128, dir Direction, flag Flag) *Plan {
 	// TODO: check that len(in) == len(out)
-	fftw_in := (*C.fftw_complex)((unsafe.Pointer)(&in[0]))
-	fftw_out := (*C.fftw_complex)((unsafe.Pointer)(&out[0]))
-	p := C.fftw_plan_dft_1d((C.int)(len(in)), fftw_in, fftw_out, C.int(dir), C.uint(flag))
+	fftw_in := (*C.fftw_complex)(unsafe.Pointer(&in[0]))
+	fftw_out := (*C.fftw_complex)(unsafe.Pointer(&out[0]))
+	p := C.fftw_plan_dft_1d(C.int(len(in)), fftw_in, fftw_out, C.int(dir), C.uint(flag))
 	return newPlan(p)
 }
 
 func PlanDft2d(in, out [][]complex128, dir Direction, flag Flag) *Plan {
 	// TODO: check that in and out have the same dimensions
-	fftw_in := (*C.fftw_complex)((unsafe.Pointer)(&in[0][0]))
-	fftw_out := (*C.fftw_complex)((unsafe.Pointer)(&out[0][0]))
-	p := C.fftw_plan_dft_2d((C.int)(len(in)), (C.int)(len(in[0])), fftw_in, fftw_out, C.int(dir), C.uint(flag))
+	fftw_in := (*C.fftw_complex)(unsafe.Pointer(&in[0][0]))
+	fftw_out := (*C.fftw_complex)(unsafe.Pointer(&out[0][0]))
+	n0 := len(in)
+	n1 := len(in[0])
+	p := C.fftw_plan_dft_2d(C.int(n0), C.int(n1), fftw_in, fftw_out, C.int(dir), C.uint(flag))
 	return newPlan(p)
 }
 
 func PlanDft3d(in, out [][][]complex128, dir Direction, flag Flag) *Plan {
 	// TODO: check that in and out have the same dimensions
-	fftw_in := (*C.fftw_complex)((unsafe.Pointer)(&in[0][0][0]))
-	fftw_out := (*C.fftw_complex)((unsafe.Pointer)(&out[0][0][0]))
-	p := C.fftw_plan_dft_3d((C.int)(len(in)), (C.int)(len(in[0])), (C.int)(len(in[0][0])), fftw_in, fftw_out, C.int(dir), C.uint(flag))
+	fftw_in := (*C.fftw_complex)(unsafe.Pointer(&in[0][0][0]))
+	fftw_out := (*C.fftw_complex)(unsafe.Pointer(&out[0][0][0]))
+	n0 := len(in)
+	n1 := len(in[0])
+	n2 := len(in[0][0])
+	p := C.fftw_plan_dft_3d(C.int(n0), C.int(n1), C.int(n2), fftw_in, fftw_out, C.int(dir), C.uint(flag))
 	return newPlan(p)
 }
 
@@ -103,17 +153,17 @@ func PlanDft3d(in, out [][][]complex128, dir Direction, flag Flag) *Plan {
 // 3. Doing a complex-to-real transform destroys the input signal.
 func PlanDftR2C1d(in []float64, out []complex128, flag Flag) *Plan {
 	// TODO: check that in and out have the appropriate dimensions
-	fftw_in := (*C.double)((unsafe.Pointer)(&in[0]))
-	fftw_out := (*C.fftw_complex)((unsafe.Pointer)(&out[0]))
-	p := C.fftw_plan_dft_r2c_1d((C.int)(len(in)), fftw_in, fftw_out, C.uint(flag))
+	fftw_in := (*C.double)(unsafe.Pointer(&in[0]))
+	fftw_out := (*C.fftw_complex)(unsafe.Pointer(&out[0]))
+	p := C.fftw_plan_dft_r2c_1d(C.int(len(in)), fftw_in, fftw_out, C.uint(flag))
 	return newPlan(p)
 }
 
 // Note: Executing this plan will destroy the data contained by in
 func PlanDftC2R1d(in []complex128, out []float64, flag Flag) *Plan {
 	// TODO: check that in and out have the appropriate dimensions
-	fftw_in := (*C.fftw_complex)((unsafe.Pointer)(&in[0]))
-	fftw_out := (*C.double)((unsafe.Pointer)(&out[0]))
-	p := C.fftw_plan_dft_c2r_1d((C.int)(len(out)), fftw_in, fftw_out, C.uint(flag))
+	fftw_in := (*C.fftw_complex)(unsafe.Pointer(&in[0]))
+	fftw_out := (*C.double)(unsafe.Pointer(&out[0]))
+	p := C.fftw_plan_dft_c2r_1d(C.int(len(out)), fftw_in, fftw_out, C.uint(flag))
 	return newPlan(p)
 }
